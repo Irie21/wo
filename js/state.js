@@ -37,6 +37,8 @@
         let anniversaries = [];
         let stickerLibrary = []; 
         let myStickerLibrary = []; 
+        let partnerStickerGroups = [];
+        let myStickerGroups = [];
         let currentAnniversaryType = 'anniversary';
         let customThemes = [];
         let themeSchemes = []; 

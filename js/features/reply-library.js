@@ -14,6 +14,30 @@ function _getGroupCtx(tab) {
         if (!window.customStatusGroups) window.customStatusGroups = [];
         return { groups: window.customStatusGroups, items: customStatuses, itemLabel: '状态' };
     }
+    if (tab === 'stickers') {
+        if (!Array.isArray(partnerStickerGroups)) partnerStickerGroups = [];
+        const fpMap = window.getStickerFpMap ? window.getStickerFpMap('partner') : null;
+        const fp = src => (fpMap && fpMap.get(src)) || (window.stickerFingerprint ? window.stickerFingerprint(src) : String(src));
+        return {
+            groups: partnerStickerGroups,
+            items: (stickerLibrary || []).map(fp),
+            itemLabel: '表情',
+            showToggle: false,
+            onChange: () => { if (typeof window.refreshStickerPicker === 'function') window.refreshStickerPicker(); }
+        };
+    }
+    if (tab === 'myStickers') {
+        if (!Array.isArray(myStickerGroups)) myStickerGroups = [];
+        const fpMap = window.getStickerFpMap ? window.getStickerFpMap('my') : null;
+        const fp = src => (fpMap && fpMap.get(src)) || (window.stickerFingerprint ? window.stickerFingerprint(src) : String(src));
+        return {
+            groups: myStickerGroups,
+            items: (myStickerLibrary || []).map(fp),
+            itemLabel: '我的表情',
+            showToggle: false,
+            onChange: () => { if (typeof window.refreshStickerPicker === 'function') window.refreshStickerPicker(); }
+        };
+    }
     // default: custom replies
     if (!window.customReplyGroups) window.customReplyGroups = [];
     return { groups: window.customReplyGroups, items: customReplies, itemLabel: '字卡' };
@@ -22,7 +46,7 @@ function _getGroupCtx(tab) {
 // 判断当前 tab 是否支持分组
 function _tabHasGroups(tab) {
     tab = tab || currentSubTab;
-    return tab === 'custom' || tab === 'pokes' || tab === 'statuses';
+    return tab === 'custom' || tab === 'pokes' || tab === 'statuses' || tab === 'stickers';
 }
 
 let _batchSelectedIndices = new Set();
@@ -858,7 +882,39 @@ function _renderEmojiTab(list, itemsToRender) {
 
 function _renderStickerTab(list, itemsToRender) {
     const disabledSet = _getDisabledStickerItemsSet();
-    itemsToRender.forEach((item, index) => {
+    const groupCtx = _getGroupCtx('stickers');
+    if (typeof _activeGroupFilter === 'number' && !groupCtx.groups.some(g => g.id === _activeGroupFilter)) {
+        _activeGroupFilter = null;
+    }
+    if (_activeGroupFilter === 'ungrouped' && groupCtx.groups.length === 0) _activeGroupFilter = null;
+    const fpMap = window.getStickerFpMap ? window.getStickerFpMap('partner') : null;
+    const fp = src => (fpMap && fpMap.get(src)) || (window.stickerFingerprint ? window.stickerFingerprint(src) : String(src));
+
+    let visibleItems = itemsToRender;
+    if (_activeGroupFilter === 'ungrouped') {
+        const groupSets = groupCtx.groups.map(g => new Set(g.items || []));
+        visibleItems = itemsToRender.filter(item => {
+            const key = fp(item);
+            return !groupSets.some(set => set.has(key));
+        });
+    } else if (_activeGroupFilter !== null) {
+        const activeGroup = groupCtx.groups.find(g => g.id === _activeGroupFilter);
+        if (activeGroup) {
+            const set = new Set(activeGroup.items || []);
+            visibleItems = itemsToRender.filter(item => set.has(fp(item)));
+        }
+    }
+
+    if (visibleItems.length === 0) {
+        list.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:36px 12px;color:var(--text-secondary);font-size:13px;line-height:1.7;">
+            这个分组还没有表情<br><span style="font-size:11px;opacity:0.75;">点击表情左下角的文件夹按钮即可加入分组</span>
+        </div>`;
+        return;
+    }
+
+    visibleItems.forEach((item, visibleIndex) => {
+        const index = stickerLibrary.indexOf(item);
+        if (index < 0) return;
         const div = document.createElement('div');
         const isDisabled = disabledSet.has(item);
         const isSelected = _batchModeActive && _batchSelectedIndices.has(index);
@@ -867,6 +923,7 @@ function _renderStickerTab(list, itemsToRender) {
             <img src="${item}" loading="lazy">
             <div class="sticker-batch-check">✓</div>
             <div class="sticker-delete-btn"><i class="fas fa-times"></i></div>
+            <div class="sticker-group-tag-btn" title="设置分组"><i class="fas fa-folder"></i></div>
         `;
         div.addEventListener('click', () => {
             if (!_batchModeActive) return;
@@ -878,7 +935,6 @@ function _renderStickerTab(list, itemsToRender) {
         div.querySelector('.sticker-delete-btn').addEventListener('click', e => {
             e.stopPropagation();
             if (confirm('删除此表情？')) {
-                // 如果该贴纸处于“已屏蔽”，删除后同步移出屏蔽集合
                 if (isDisabled) {
                     disabledSet.delete(item);
                     _saveDisabledStickerItemsSet(disabledSet);
@@ -887,7 +943,12 @@ function _renderStickerTab(list, itemsToRender) {
                 _batchSelectedIndices.clear();
                 throttledSaveData();
                 renderReplyLibrary();
+                if (typeof groupCtx.onChange === 'function') groupCtx.onChange();
             }
+        });
+        div.querySelector('.sticker-group-tag-btn').addEventListener('click', e => {
+            e.stopPropagation();
+            _showSingleItemGroupPicker(fp(item), groupCtx);
         });
         list.appendChild(div);
     });
@@ -978,8 +1039,8 @@ function _runDedup() {
     }
 }
 
-function _showGroupManager() {
-    const ctx = _getGroupCtx();
+function _showGroupManager(groupCtx) {
+    const ctx = groupCtx || _getGroupCtx();
     const groups = ctx.groups;
     const sourceItems = ctx.items;
     const overlay = _makeOverlay();
@@ -1000,12 +1061,12 @@ function _showGroupManager() {
                     <span style="width:12px;height:12px;border-radius:50%;background:${g.color||'#868E96'};flex-shrink:0;box-shadow:0 0 0 2px ${g.color||'#868E96'}30;"></span>
                     <span style="flex:1;font-size:13px;color:var(--text-primary);font-weight:600;">${g.name}</span>
                     <span style="font-size:11px;color:var(--text-secondary);">${(g.items||[]).filter(t=>sourceItems.includes(t)).length} 条</span>
-                    <button data-action="toggle" data-i="${i}" style="
+                    ${ctx.showToggle === false ? '' : `<button data-action="toggle" data-i="${i}" style="
                         width:28px;height:28px;border-radius:8px;border:1px solid var(--border-color);
                         background:${g.disabled ? 'var(--accent-color)' : 'transparent'};
                         color:${g.disabled ? '#fff' : 'var(--text-secondary)'};
                         cursor:pointer;display:flex;align-items:center;justify-content:center;
-                    " title="${g.disabled ? '启用' : '屏蔽'}">${g.disabled ? ICONS.eye : ICONS.eyeOff}</button>
+                    " title="${g.disabled ? '启用' : '屏蔽'}">${g.disabled ? ICONS.eye : ICONS.eyeOff}</button>`}
                     <button data-action="edit" data-i="${i}" style="
                         width:28px;height:28px;border-radius:8px;border:1px solid var(--border-color);
                         background:transparent;color:var(--text-secondary);cursor:pointer;
@@ -1026,13 +1087,15 @@ function _showGroupManager() {
                 if (action === 'toggle') {
                     groups[i].disabled = !groups[i].disabled;
                     throttledSaveData(); render(); renderReplyLibrary();
+                    if (typeof ctx.onChange === 'function') ctx.onChange();
                 } else if (action === 'edit') {
                     overlay.remove();
-                    _showGroupEditor(groups[i], ctx);
+                    _showGroupEditor(groups[i], ctx, true);
                 } else if (action === 'del') {
                     if (confirm(`删除分组「${groups[i].name}」？（内容不会被删除）`)) {
                         groups.splice(i, 1);
                         throttledSaveData(); render(); renderReplyLibrary();
+                        if (typeof ctx.onChange === 'function') ctx.onChange();
                     }
                 }
             };
@@ -1073,10 +1136,10 @@ function _showGroupManager() {
 
     panel.querySelector('#gm-close').onclick = () => overlay.remove();
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    panel.querySelector('#gm-add').onclick = () => { overlay.remove(); _showGroupEditor(null, ctx); };
+    panel.querySelector('#gm-add').onclick = () => { overlay.remove(); _showGroupEditor(null, ctx, true); };
 }
 
-function _showGroupEditor(group, ctx) {
+function _showGroupEditor(group, ctx, reopenManager = false) {
     ctx = ctx || _getGroupCtx();
     const groups = ctx.groups;
     const isNew = !group;
@@ -1210,7 +1273,11 @@ function _showGroupEditor(group, ctx) {
         throttledSaveData();
         overlay.remove();
         renderReplyLibrary();
+        if (typeof ctx.onChange === 'function') ctx.onChange();
         showNotification(isNew ? '✓ 分组已创建' : '✓ 分组已更新', 'success');
+        if (reopenManager && typeof _showGroupManager === 'function') {
+            setTimeout(() => _showGroupManager(ctx), 60);
+        }
     };
 }
 
@@ -1270,6 +1337,7 @@ function _showSingleItemGroupPicker(itemText, ctx) {
         throttledSaveData();
         overlay.remove();
         renderReplyLibrary();
+        if (typeof ctx.onChange === 'function') ctx.onChange();
         showNotification('✓ 分组已更新', 'success');
     };
 }

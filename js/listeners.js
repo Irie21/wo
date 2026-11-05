@@ -9,6 +9,7 @@ function setupEventListeners() {
         setupTutorialListeners();
         initMoodListeners();
         initDecisionModule(); 
+        if (typeof initStickerGroups === 'function') initStickerGroups();
         initAnniversaryModule(); 
         initThemeEditor(); 
         initThemeSchemes();

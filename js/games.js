@@ -1027,66 +1027,171 @@ function initComboMenu() {
         return item;
     }
 
-    function renderMyStickerLibrary() {
+    const _stickerGroupFilters = { my: null, partner: null };
+
+    function sendStickerFromPicker(libKey, src) {
+        addMessage({ id: Date.now(), sender: 'user', text: '', timestamp: new Date(), image: src, status: 'sent', type: 'normal' });
+        if (typeof window.recordStickerRecent === 'function') window.recordStickerRecent(libKey, src);
+        playSound('send');
+        picker.classList.remove('active');
+        const delayRange = settings.replyDelayMax - settings.replyDelayMin;
+        setTimeout(simulateReply, settings.replyDelayMin + Math.random() * delayRange);
+    }
+
+    function renderStickerTab(libKey) {
         contentArea.innerHTML = '';
-        if (!myStickerLibrary || myStickerLibrary.length === 0) {
-            contentArea.innerHTML = `
-                <div class="empty-sticker-tip">
-                    <i class="fas fa-user-circle"></i>
-                    还没有我的专属表情哦<br>
-                    点击右上角"添加"按钮上传图片~
-                </div>
-            `;
+        contentArea.style.display = 'flex';
+        contentArea.style.flexDirection = 'column';
+        contentArea.style.gap = '8px';
+
+        const lib = window.stickerLibraryFor
+            ? window.stickerLibraryFor(libKey)
+            : (libKey === 'my' ? myStickerLibrary : stickerLibrary);
+        const groups = window.stickerGroupsFor ? window.stickerGroupsFor(libKey) : [];
+        const fpMap = window.getStickerFpMap ? window.getStickerFpMap(libKey) : null;
+        const fp = src => (fpMap && fpMap.get(src)) || (window.stickerFingerprint ? window.stickerFingerprint(src) : String(src));
+
+        // 最近使用
+        const recents = window.getRecentStickers ? window.getRecentStickers(12) : [];
+        if (recents.length > 0) {
+            const recentWrap = document.createElement('div');
+            recentWrap.className = 'sticker-recent';
+            const head = document.createElement('div');
+            head.className = 'sticker-recent-head';
+            head.innerHTML = '<span>最近使用</span>';
+            const clearBtn = document.createElement('button');
+            clearBtn.type = 'button';
+            clearBtn.className = 'sticker-recent-clear';
+            clearBtn.textContent = '清空';
+            clearBtn.onclick = (e) => {
+                e.stopPropagation();
+                if (typeof window.clearStickerRecent === 'function') window.clearStickerRecent();
+            };
+            head.appendChild(clearBtn);
+            recentWrap.appendChild(head);
+
+            const row = document.createElement('div');
+            row.className = 'sticker-recent-row';
+            recents.forEach(item => {
+                row.appendChild(makeStickerItem(item.src, () => sendStickerFromPicker(item.lib, item.src)));
+            });
+            recentWrap.appendChild(row);
+            contentArea.appendChild(recentWrap);
+        }
+
+        // 分组筛选
+        if (typeof _stickerGroupFilters[libKey] === 'number' &&
+            !groups.some(g => g.id === _stickerGroupFilters[libKey])) {
+            _stickerGroupFilters[libKey] = null;
+        }
+        if (_stickerGroupFilters[libKey] === 'ungrouped' && groups.length === 0) {
+            _stickerGroupFilters[libKey] = null;
+        }
+        const filter = _stickerGroupFilters[libKey];
+        const bar = document.createElement('div');
+        bar.className = 'sticker-group-bar';
+
+        const addChip = (label, value, color, manage) => {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'sticker-group-chip'
+                + (manage ? ' manage' : '')
+                + (filter === value && !manage ? ' active' : '');
+            if (color && filter === value) {
+                chip.style.background = color;
+                chip.style.borderColor = color;
+                chip.style.color = '#fff';
+            }
+            if (manage) {
+                chip.innerHTML = '<i class="fas fa-gear"></i> 分组管理';
+            } else {
+                chip.textContent = label;
+            }
+            chip.onclick = (e) => {
+                e.stopPropagation();
+                if (manage) {
+                    if (typeof window.openStickerGroupManager === 'function') window.openStickerGroupManager(libKey);
+                    return;
+                }
+                _stickerGroupFilters[libKey] = value;
+                renderStickerTab(libKey);
+            };
+            bar.appendChild(chip);
+        };
+
+        addChip('全部', null);
+        if (groups.length > 0) addChip('未分组', 'ungrouped');
+        groups.forEach(group => addChip(group.name, group.id, group.color));
+        addChip('分组管理', '__manage__', null, true);
+        contentArea.appendChild(bar);
+
+        if (!lib || lib.length === 0) {
+            const tip = document.createElement('div');
+            tip.className = 'empty-sticker-tip';
+            tip.innerHTML = `<i class="${libKey === 'my' ? 'fas fa-user-circle' : 'far fa-images'}"></i>`
+                + (libKey === 'my'
+                    ? '还没有我的专属表情哦<br>点击右上角"添加"按钮上传图片~'
+                    : '对方表情库还是空的哦<br>请去"高级功能"->"自定义回复"->"表情库"中添加图片~');
+            contentArea.appendChild(tip);
             return;
         }
+
+        let visible = lib;
+        if (filter === 'ungrouped') {
+            const groupSets = groups.map(g => new Set(g.items || []));
+            visible = lib.filter(src => {
+                const key = fp(src);
+                return !groupSets.some(set => set.has(key));
+            });
+        } else if (typeof filter === 'number') {
+            const activeGroup = groups.find(g => g.id === filter);
+            if (activeGroup) {
+                const set = new Set(activeGroup.items || []);
+                visible = lib.filter(src => set.has(fp(src)));
+            }
+        }
+
+        if (visible.length === 0) {
+            const tip = document.createElement('div');
+            tip.className = 'empty-sticker-tip';
+            tip.innerHTML = '<i class="fas fa-folder-open"></i>这个分组还没有表情<br>'
+                + '<span style="font-size:11px;">去「分组管理」里选择要加入的表情</span>';
+            contentArea.appendChild(tip);
+            return;
+        }
+
         const grid = document.createElement('div');
         grid.className = 'sticker-grid-view';
-        myStickerLibrary.forEach((src, idx) => {
-            const item = makeDeletableStickerItem(src, () => {
-                addMessage({ id: Date.now(), sender: 'user', text: '', timestamp: new Date(), image: src, status: 'sent', type: 'normal' });
-                playSound('send');
-                picker.classList.remove('active');
-                const delayRange = settings.replyDelayMax - settings.replyDelayMin;
-                setTimeout(simulateReply, settings.replyDelayMin + Math.random() * delayRange);
-            }, () => {
-                myStickerLibrary.splice(idx, 1);
-                localforage.setItem(getStorageKey('myStickerLibrary'), myStickerLibrary);
-                showNotification('✓ 已删除', 'success');
-                renderMyStickerLibrary();
-            });
-            grid.appendChild(item);
+        visible.forEach(src => {
+            if (libKey === 'my') {
+                const idx = myStickerLibrary.indexOf(src);
+                const item = makeDeletableStickerItem(src, () => {
+                    sendStickerFromPicker('my', src);
+                }, () => {
+                    myStickerLibrary.splice(idx, 1);
+                    localforage.setItem(getStorageKey('myStickerLibrary'), myStickerLibrary);
+                    showNotification('✓ 已删除', 'success');
+                    renderStickerTab('my');
+                });
+                grid.appendChild(item);
+            } else {
+                grid.appendChild(makeStickerItem(src, () => sendStickerFromPicker('partner', src)));
+            }
         });
         contentArea.appendChild(grid);
     }
 
-    function renderPartnerStickerLibrary() {
-        contentArea.innerHTML = '';
-        if (!stickerLibrary || stickerLibrary.length === 0) {
-            contentArea.innerHTML = `
-                <div class="empty-sticker-tip">
-                    <i class="far fa-images"></i>
-                    对方表情库还是空的哦<br>
-                    请去"高级功能"->"自定义回复"->"表情库"中添加图片~
-                </div>
-            `;
-            return;
-        }
-        const grid = document.createElement('div');
-        grid.className = 'sticker-grid-view';
-        stickerLibrary.forEach(src => {
-            const item = makeStickerItem(src, () => {
-                addMessage({ id: Date.now(), sender: 'user', text: '', timestamp: new Date(), image: src, status: 'sent', type: 'normal' });
-                playSound('send');
-                picker.classList.remove('active');
-                const delayRange = settings.replyDelayMax - settings.replyDelayMin;
-                setTimeout(simulateReply, settings.replyDelayMin + Math.random() * delayRange);
-            });
-            grid.appendChild(item);
-        });
-        contentArea.appendChild(grid);
-    }
+    function renderMyStickerLibrary() { renderStickerTab('my'); }
+    function renderPartnerStickerLibrary() { renderStickerTab('partner'); }
+    function renderStickerLibrary() { renderStickerTab('my'); }
 
-    function renderStickerLibrary() { renderMyStickerLibrary(); }
+    window.refreshStickerPicker = function() {
+        if (!picker.classList.contains('active')) return;
+        const activeTab = Array.from(tabs).find(b => b.classList.contains('active'));
+        if (!activeTab) return;
+        if (activeTab.dataset.tab === 'my-sticker') renderStickerTab('my');
+        else if (activeTab.dataset.tab === 'partner-sticker') renderStickerTab('partner');
+    };
     function renderUserPokeMenu() {
         contentArea.innerHTML = '';
 

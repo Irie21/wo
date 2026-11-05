@@ -2,13 +2,42 @@
 <html lang="zh-CN" data-theme="light" data-color-theme="black-white">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#000000">
 
     <title>传讯</title>
+    <script>
+    (function () {
+        try {
+            var root = document.documentElement;
+            if (sessionStorage.getItem('appHasBooted') === '1') root.classList.add('app-resume');
+            if (localStorage.getItem('splashPledgeSigned_v5') === 'true') root.classList.add('app-signed');
+
+            // 首屏前恢复主题与背景，避免切回页面时先空白再显示
+            var snapshot = {};
+            try { snapshot = JSON.parse(localStorage.getItem('CHAT_APP_V3_uiSnapshot') || '{}'); } catch (e) {}
+            if (snapshot.colorTheme) root.setAttribute('data-color-theme', snapshot.colorTheme);
+            if (typeof snapshot.isDarkMode === 'boolean') {
+                root.setAttribute('data-theme', snapshot.isDarkMode ? 'dark' : 'light');
+            }
+            if (snapshot.vars && typeof snapshot.vars === 'object') {
+                Object.keys(snapshot.vars).forEach(function (k) {
+                    if (k.indexOf('--') === 0) root.style.setProperty(k, snapshot.vars[k]);
+                });
+            }
+            var bg = localStorage.getItem('CHAT_APP_V3_lastChatBackgroundPreview')
+                || localStorage.getItem('CHAT_APP_V3_lastChatBackground');
+            if (bg) {
+                var bgValue = /^(linear-gradient|radial-gradient|conic-gradient|#|rgb|hsl|url\()/i.test(bg)
+                    ? bg : 'url(' + bg + ')';
+                root.style.setProperty('--chat-bg-image', bgValue);
+            }
+        } catch (e) {}
+    })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1377,6 +1406,9 @@
                     <div class="settings-item" id="custom-replies-function">
                         <i class="fas fa-comment-dots"></i><span>自定义回复</span>
                     </div>
+                    <div class="settings-item" id="sticker-groups-function">
+                        <i class="fas fa-layer-group"></i><span>表情包分组</span>
+                    </div>
                     <div class="settings-item" id="music-player-toggle">
                         <i class="fas fa-music"></i><span>悬浮音乐播放器</span>
                     </div>
@@ -2245,6 +2277,7 @@
     <script src="js/features/mood.js"></script>
     <script src="js/features/envelope.js"></script>
     <script src="js/features/reply-library.js"></script>
+    <script src="js/features/sticker-groups.js"></script>
     <script src="js/features/ask.js"></script>
     <script src="js/features/theme-editor.js"></script>
     <script src="js/features/group-chat.js"></script>

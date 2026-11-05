@@ -4,6 +4,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const welcomeScreen = document.getElementById('welcome-animation');
     const disclaimerModal = document.getElementById('disclaimer-modal');
     const acceptDisclaimerBtn = document.getElementById('accept-disclaimer');
+    const isResume = (() => {
+        try { return sessionStorage.getItem('appHasBooted') === '1'; } catch (e) { return false; }
+    })();
 
     const updateLoader = (text, width) => {
         if (welcomeSubtitle) welcomeSubtitle.textContent = text;
@@ -11,6 +14,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     const hideWelcomeScreen = () => {
+        try { sessionStorage.setItem('appHasBooted', '1'); } catch (e) {}
         if (!welcomeScreen) return;
         welcomeScreen.classList.add('hidden');
         setTimeout(() => {
@@ -33,6 +37,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     try {
+        if (isResume) hideWelcomeScreen();
+
         try { setupEventListeners?.(); } catch(e) { console.error('setupEventListeners:', e); }
 
         if (typeof localforage === 'undefined') {
@@ -53,6 +59,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         updateLoader('正在建立安全连接...', '10%');
         await safeAwait(initializeSession());
+
+        // 会话就绪后立即恢复缓存背景，避免异步加载期间出现空白画面
+        try {
+            const earlyBg = localStorage.getItem('CHAT_APP_V3_lastChatBackground');
+            if (earlyBg && typeof applyBackground === 'function') applyBackground(earlyBg);
+        } catch (e) {}
 
         updateLoader('正在读取记忆存档...', '40%');
         await safeAwait(loadData());
@@ -84,7 +96,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         updateLoader('连接成功，欢迎回来。', '100%');
-        setTimeout(hideWelcomeScreen, 3500);
+        if (!isResume) setTimeout(hideWelcomeScreen, 3500);
 
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
@@ -103,8 +115,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else if (document.visibilityState === 'visible') {
                 try {
                     const backup = typeof _tryRecoverFromBackup === 'function' ? _tryRecoverFromBackup() : null;
-                    if (backup && Array.isArray(backup.messages) && backup.messages.length > 0 && Array.isArray(messages) && backup.messages.length > messages.length) {
-                        console.warn('[visibilitychange] 检测到备份消息比当前更多，自动尝试恢复');
+                    // 只在当前消息完全为空（疑似数据丢失）时恢复，避免切回页面时用旧备份覆盖当前进度造成闪烁/回档
+                    if (backup && Array.isArray(backup.messages) && backup.messages.length > 0 && (!Array.isArray(messages) || messages.length === 0)) {
+                        console.warn('[visibilitychange] 检测到消息为空，尝试使用本地临时备份恢复');
                         try {
                             messages = backup.messages.map(m => ({
                                 ...m,
@@ -134,8 +147,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // ── 移动端省电 / 后台降负载 ──
         let _idleTimer = null;
-        const _enterEcoMode = () => document.documentElement.classList.add('eco-mode');
-        const _leaveEcoMode = () => document.documentElement.classList.remove('eco-mode');
+        let _lastActivityAt = 0;
+        const _enterEcoMode = () => {
+            if (!document.documentElement.classList.contains('eco-mode')) {
+                document.documentElement.classList.add('eco-mode');
+            }
+        };
+        const _leaveEcoMode = () => {
+            if (document.documentElement.classList.contains('eco-mode')) {
+                document.documentElement.classList.remove('eco-mode');
+            }
+        };
         const _resetIdleTimer = () => {
             _leaveEcoMode();
             if (_idleTimer) clearTimeout(_idleTimer);
@@ -143,16 +165,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 _idleTimer = setTimeout(_enterEcoMode, 90000);
             }
         };
+        const _markActivity = () => {
+            const now = Date.now();
+            if (now - _lastActivityAt < 400) return;
+            _lastActivityAt = now;
+            _resetIdleTimer();
+        };
 
         ['pointerdown', 'touchstart', 'keydown', 'wheel'].forEach(evt => {
-            document.addEventListener(evt, _resetIdleTimer, { passive: true });
+            document.addEventListener(evt, _markActivity, { passive: true });
         });
-        window.addEventListener('scroll', _resetIdleTimer, { passive: true, capture: true });
+        window.addEventListener('scroll', _markActivity, { passive: true, capture: true });
 
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
                 if (_idleTimer) clearTimeout(_idleTimer);
-                document.documentElement.classList.add('app-hidden', 'eco-mode');
+                // 只暂停动画，不切换 eco-mode，避免切回瞬间顶部栏样式跳变
+                document.documentElement.classList.add('app-hidden');
             } else {
                 document.documentElement.classList.remove('app-hidden');
                 _resetIdleTimer();

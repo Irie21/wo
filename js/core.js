@@ -263,16 +263,58 @@ autoSendInterval: 5,
 }
 
 
+        let _bgPreviewTimer = null;
+        function cacheBackgroundPreview(value) {
+            try {
+                const compact = /^(linear-gradient|radial-gradient|conic-gradient|#|rgb|hsl)/i.test(value);
+                if (compact) {
+                    localStorage.setItem('CHAT_APP_V3_lastChatBackgroundPreview', value);
+                    localStorage.setItem('CHAT_APP_V3_lastChatBackgroundPreviewKey', 'compact');
+                    return;
+                }
+                if (!/^data:image\//i.test(value)) return;
+                const fingerprint = value.length + '|' + value.slice(0, 48) + '|' + value.slice(-48);
+                if (localStorage.getItem('CHAT_APP_V3_lastChatBackgroundPreviewKey') === fingerprint &&
+                    localStorage.getItem('CHAT_APP_V3_lastChatBackgroundPreview')) return;
+
+                clearTimeout(_bgPreviewTimer);
+                _bgPreviewTimer = setTimeout(() => {
+                    const img = new Image();
+                    img.onload = () => {
+                        try {
+                            const max = 720;
+                            let w = img.naturalWidth || img.width;
+                            let h = img.naturalHeight || img.height;
+                            if (!w || !h) return;
+                            const scale = Math.min(1, max / Math.max(w, h));
+                            w = Math.max(1, Math.round(w * scale));
+                            h = Math.max(1, Math.round(h * scale));
+                            const canvas = document.createElement('canvas');
+                            canvas.width = w; canvas.height = h;
+                            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                            const preview = canvas.toDataURL('image/jpeg', 0.55);
+                            localStorage.setItem('CHAT_APP_V3_lastChatBackgroundPreview', preview);
+                            localStorage.setItem('CHAT_APP_V3_lastChatBackgroundPreviewKey', fingerprint);
+                        } catch (e) {}
+                    };
+                    img.onerror = () => {};
+                    img.src = value;
+                }, 250);
+            } catch (e) {}
+        }
+
         const applyBackground = (value) => {
             if (!value || typeof value !== 'string') return;
             try {
-                if (value.startsWith('linear-gradient') || value.startsWith('#') || value.startsWith('rgb')) {
+                if (/^(linear-gradient|radial-gradient|conic-gradient|#|rgb|hsl|url\()/i.test(value)) {
                     document.documentElement.style.setProperty('--chat-bg-image', value);
                 } else {
-                    const cssValue = value.startsWith('url(') ? value : `url(${value})`;
-                    document.documentElement.style.setProperty('--chat-bg-image', cssValue);
+                    document.documentElement.style.setProperty('--chat-bg-image', `url(${value})`);
                 }
                 document.body.classList.add('with-background');
+                // 同步缓存到 localStorage，首屏脚本可立即恢复，避免切回页面时背景空白
+                try { localStorage.setItem('CHAT_APP_V3_lastChatBackground', value); } catch (e) {}
+                cacheBackgroundPreview(value);
             } catch (e) {
                 if (typeof removeBackground === 'function') removeBackground();
             }
@@ -330,7 +372,9 @@ const loadData = async () => {
             localforage.getItem(getStorageKey('myStickerLibrary')),
             localforage.getItem(getStorageKey('customReplyGroups')),
             localforage.getItem(getStorageKey('customPokeGroups')),
-            localforage.getItem(getStorageKey('customStatusGroups'))
+            localforage.getItem(getStorageKey('customStatusGroups')),
+            localforage.getItem(getStorageKey('partnerStickerGroups')),
+            localforage.getItem(getStorageKey('myStickerGroups'))
         ]);
         const getVal = (index) => results[index].status === 'fulfilled' ? results[index].value : null;
 
@@ -355,6 +399,8 @@ const loadData = async () => {
         const savedReplyGroups = getVal(18);
         const savedPokeGroups = getVal(19);
         const savedStatusGroups = getVal(20);
+        const savedPartnerStickerGroups = getVal(21);
+        const savedMyStickerGroups = getVal(22);
 
         if (savedPartnerPersonas) partnerPersonas = savedPartnerPersonas;
 
@@ -423,6 +469,8 @@ const loadData = async () => {
         if (savedAnniversaries) anniversaries = savedAnniversaries;
         if (savedStickers) stickerLibrary = savedStickers;
         if (savedMyStickers) myStickerLibrary = savedMyStickers;
+        if (Array.isArray(savedPartnerStickerGroups)) partnerStickerGroups = savedPartnerStickerGroups;
+        if (Array.isArray(savedMyStickerGroups)) myStickerGroups = savedMyStickerGroups;
         if (savedCustomThemes) customThemes = savedCustomThemes;
         if (savedThemeSchemes) themeSchemes = savedThemeSchemes;
         try { const ce = await localforage.getItem(getStorageKey('customEmojis')); if (ce && Array.isArray(ce)) customEmojis = ce; } catch(e) {}
@@ -614,6 +662,8 @@ const saveData = async () => {
         { key: 'customReplyGroups',      val: () => localforage.setItem(getStorageKey('customReplyGroups'), window.customReplyGroups || []) },
         { key: 'customPokeGroups',        val: () => localforage.setItem(getStorageKey('customPokeGroups'), window.customPokeGroups || []) },
         { key: 'customStatusGroups',      val: () => localforage.setItem(getStorageKey('customStatusGroups'), window.customStatusGroups || []) },
+        { key: 'partnerStickerGroups',    val: () => localforage.setItem(getStorageKey('partnerStickerGroups'), partnerStickerGroups || []) },
+        { key: 'myStickerGroups',         val: () => localforage.setItem(getStorageKey('myStickerGroups'), myStickerGroups || []) },
         { key: 'customEmojis',           val: () => localforage.setItem(getStorageKey('customEmojis'), customEmojis) },
         { key: 'anniversaries',          val: () => localforage.setItem(getStorageKey('anniversaries'), anniversaries) },
         { key: 'customPokes',            val: () => localforage.setItem(getStorageKey('customPokes'), customPokes) },
@@ -870,6 +920,24 @@ function manageAutoSendTimer() {
     }
 }
 
+        function _cacheUiSnapshot() {
+            try {
+                const vars = {};
+                const inline = document.documentElement.style;
+                for (let i = 0; i < inline.length; i++) {
+                    const key = inline[i];
+                    if (key && key.indexOf('--') === 0 && key !== '--chat-bg-image') {
+                        vars[key] = inline.getPropertyValue(key);
+                    }
+                }
+                localStorage.setItem('CHAT_APP_V3_uiSnapshot', JSON.stringify({
+                    isDarkMode: !!settings.isDarkMode,
+                    colorTheme: settings.colorTheme,
+                    vars: vars
+                }));
+            } catch (e) {}
+        }
+
         const updateUI = () => {
             const isCustomTheme = settings.colorTheme.startsWith('custom-');
             if (isCustomTheme) {
@@ -945,6 +1013,7 @@ function manageAutoSendTimer() {
             const _immToggle = document.getElementById('immersive-toggle');
             if (_immToggle) _immToggle.classList.toggle('active', document.body.classList.contains('immersive-mode'));
 
+            _cacheUiSnapshot();
             renderMessages();
         };
 
@@ -957,6 +1026,11 @@ function manageAutoSendTimer() {
             document.body.classList.remove('with-background');
             localforage.removeItem(getStorageKey('chatBackground'));
             safeRemoveItem(getStorageKey('chatBackground'));
+            try {
+                localStorage.removeItem('CHAT_APP_V3_lastChatBackground');
+                localStorage.removeItem('CHAT_APP_V3_lastChatBackgroundPreview');
+                localStorage.removeItem('CHAT_APP_V3_lastChatBackgroundPreviewKey');
+            } catch (e) {}
             showNotification('背景图片已移除', 'success');
         };
 
